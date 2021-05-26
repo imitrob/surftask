@@ -1,0 +1,8 @@
+curve_library: {
+    curved_curve: {
+        property_x: "value"
+    },
+    special_curve: {
+        property_x: "other_value"
+    }
+}

@@ -1,0 +1,8 @@
+std_msgs/Header header
+traject_msgs/ExecutionOptions opt
+geometry_msgs/Point[] curve
+geometry_msgs/Vector3[] normals
+---
+bool done
+---
+float64 progress

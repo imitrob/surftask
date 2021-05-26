@@ -1,0 +1,7 @@
+<launch>
+    <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
+    <!-- <group ns="camera/realsense2_camera">
+        <rosparam file="$(find traj_complete_ros)/config/rs_camera.yaml" />
+    </group> -->
+    <node pkg="traj_complete_ros" type="aruco_detector.py" name="aruco_detector"/>
+</launch>

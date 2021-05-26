@@ -1,0 +1,4 @@
+<launch>
+    <include file="$(find traj_complete_ros)/launch/vision.launch" />
+    <node pkg="traj_complete_ros" type="detection_node.py" name="detector" output="screen"/>
+</launch>

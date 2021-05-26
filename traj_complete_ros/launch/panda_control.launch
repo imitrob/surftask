@@ -1,0 +1,6 @@
+<launch>
+    <node pkg="tf" type="static_transform_publisher" name="table_transform" args="0.3 0 0.0 0 0 0 1 world table2 100"/>
+    <node pkg="traj_complete_ros" type="panda_controller.py" name="panda_task_controller"/>
+    <!--<node pkg="traj_complete_ros" type="panda_robot_control_node.py" name="panda_curve_executer"/>-->
+    <!--rosrun tf static_transform_blisher 0.3 0 0 0 0 0 1 panda_link0 table2 100-->
+</launch>
