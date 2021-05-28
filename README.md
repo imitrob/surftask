@@ -1,3 +1,16 @@
+## Purpose of this repository
+
+This repository holds the code used to generate the results presented in the paper
+*An interactive system to define robotic surface manipulation tasks*
+by Radoslav Skoviera, Jan Kristof Behrens, and Karla Stepanova. The paper is currently under review.
+For more information, please consult our webpage [http://imitrob.ciirc.cvut.cz/surftask.html](http://imitrob.ciirc.cvut.cz/surftask.html).
+
+### Disclaimer
+
+The content of this repository is a prototypical proof of concept implementation.
+We were using it on a real robot, but we don't take any responsibility for damages
+incurred by using our code.
+
 ## Installation  
 
 ### Requirements  
@@ -7,15 +20,24 @@ http://wiki.ros.org/melodic/Installation/Ubuntu
 
 The package is written for Python 2.7.  
 
-Additionally, it requires these Python packages, besides _standard_, _ROS_, and _"scientific"_ (e.g. numpy, scipy) Python packages:  
+Additionally, it requires these Python packages, besides _standard_, _ROS_, and _"scientific"_ (e.g. numpy, scipy, sklearn, pandas, matplotlib) Python packages:  
 * open3d==0.12.0  
 * cv2==4.2.0 (openCV for Python)  
-# TODO: add Python packages from the robotic side  
+* open3d
+* toppra>=0.4.1 (time parameterization tool)
+* numba
+* fastdtw
+
+Other ROS dependencies
+- [Descartes motion planner](https://github.com/ros-industrial-consortium/descartes)
+- [PyKDL](https://github.com/gt-ros-pkg/hrl-kdl)
+- [RelaxedIK]() (optional)
+- Capek testbed ROS packages (the robotic workplace used in the paper)
 
 ### Installation  
 
-1) Download the package from [https://github.com/imitrob/surftask](https://github.com/imitrob/surftask).
-2) Create [ROS workspace](http://wiki.ros.org/catkin/Tutorials/create_a_workspace) and copy the source codes to the _src_ folder of the workspace.  
+1) Clone the package from [https://github.com/imitrob/surftask](https://github.com/imitrob/surftask) into a ROS workspace ([ROS workspace](http://wiki.ros.org/catkin/Tutorials/create_a_workspace)).
+2) Install missing dependencies using rosdep: `rosdep install --from-src src -y` TODO: check command and update package xml
 3) Build using the `catkin build` command.  
 
 
@@ -83,7 +105,15 @@ This mode assumes you have an RGBD camera and a robot to execute the trajectorie
 2) Start the GUI node:  
   `rosrun traj_complete_ros interface_node.py`
 3) A GUI should show up. Controls are described below.
-# TODO add robotic parts
+#### Robot Control
+4) Start your robot and its movegroup interface_node.
+   `roslaunch capek_launch virtual_robot.launch`
+5) Start the [Descartes planner server}(traj_complete_ros/cpp/descartes_planner_server.cpp)
+  `rosrun traj_complete_ros dps`
+6) Start the robot control node:
+  `rosrun traj_complete_ros robot_control_node.py`
+7) OPTIONAL: for advanced logging run
+  `rosrun traj_complete_ros logger_node.py`
 
 
 
