@@ -1,8 +1,8 @@
 ## Purpose of this repository
 
 This repository holds the code used to generate the results presented in the paper
-*An interactive system to define robotic surface manipulation tasks*
-by Radoslav Skoviera, Jan Kristof Behrens, and Karla Stepanova. The paper is currently under review.
+*R. Skoviera, J. K. Behrens and K. Stepanova, "SurfMan: Generating Smooth End-Effector Trajectories on 3D Object Surfaces for Human-Demonstrated Pattern Sequence," in IEEE Robotics and Automation Letters, vol. 7, no. 4, pp. 9183-9190, Oct. 2022, doi: [10.1109/LRA.2022.3189178](https://ieeexplore.ieee.org/document/9817640?source=authoralert).*
+by Radoslav Skoviera, Jan Kristof Behrens, and Karla Stepanova. 
 For more information, please consult our webpage [http://imitrob.ciirc.cvut.cz/surftask.html](http://imitrob.ciirc.cvut.cz/surftask.html).
 
 ### Disclaimer
