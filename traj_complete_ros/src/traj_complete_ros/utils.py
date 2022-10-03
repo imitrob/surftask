@@ -1,5 +1,5 @@
 import numpy as np
-#from traject_msgs.msg import ContourArrayStamped, Contour, Point2D
+from traject_msgs.msg import ContourArrayStamped, Contour, Point2D
 from sensor_msgs.msg import PointCloud2, PointField
 # import tf
 from tf import transformations as tr
@@ -116,6 +116,22 @@ class BsplineGen():
         return bsplineGen
 
     @classmethod
+    def fromWaypoints7D(cls, points, per_flag=False):
+        """Generates a BSplineGen object from 7D points.shape[0]
+
+        Args:
+            points (np.ndarray): The input points. Array shape should be [7, m], where m is the number of points.
+            per_flag (bool, optional): Lookup splprep help in scipy. Defaults to False.
+
+        Returns:
+            BSplineGen: The BSpline generator object.
+        """
+        bsplineGen = cls()
+        bsplineGen.generate_bspline_pars7D(points, per_flag)
+        bsplineGen.nmbPts = points.shape[-1]
+        return bsplineGen
+
+    @classmethod
     def generateLibraryData(cls, points, per_flag=False, name=""):
         """Generates a dictionary object with the BsplineGen parameters
         from waypoints (e.g., a demonstrated contour)
@@ -139,8 +155,7 @@ class BsplineGen():
         """
         params = copy.deepcopy(params)
         params[0] = params[0].tolist()
-        params[1][0] = params[1][0].tolist()
-        params[1][1] = params[1][1].tolist()
+        params[1] = [pl.tolist() for pl in params[1]]
 
         name = name or str(uuid4())
 
@@ -193,7 +208,7 @@ class BsplineGen():
 
     def toDict(self, name=""):
         if not (np.any(self.xout) and self.nmbPts):  # cannot convert "empty" spline to dict
-            return None  # TODO: raise error?
+            raise ValueError("This BSplineGen object is empty! Cannot convert to dictionary.")
         return self.splineToDict(self.pars, self.xout, self.nmbPts, name)
 
     def appendToLibrary(self, libraryPath, name=""):
@@ -207,7 +222,32 @@ class BsplineGen():
             if per_flag is True:
                 self.pars, self.xout = interpolate.splprep([x, y], s=0, per=1)
             elif per_flag is False:
+                # self.pars, self.xout = interpolate.splprep([x, y], s=0)
+                xy = np.vstack([x.T, y.T]).T
+                to_delete = np.where(np.linalg.norm(xy[1:] - xy[:-1], axis=1) <= 0.0001)
+                x = np.delete(x, to_delete, axis=0)
+                y = np.delete(y, to_delete, axis=0)
                 self.pars, self.xout = interpolate.splprep([x, y], s=0)
+
+        except Exception as e:
+            print(e)
+            raise(ValueError('Pattern and contour dimensions probably mismatch.'))
+
+        return self.pars, self.xout
+
+    # def generate_bspline_parsND(self, points, per_flag=False):
+    #     '''generates bspline parameters from points'''
+    #     #x = points.reshape(-1, 2)[:, 0]
+    #     #y = points.reshape(-1, 2)[:, 1]
+    #
+    def generate_bspline_pars7D(self, points, per_flag=False):
+        '''generates bspline parameters from points'''
+        assert points.shape[0] == 7, "The points have wrong shape! The number of rows should be equal to the dimension (i.e., 7)."
+        try:
+            if per_flag is True:
+                self.pars, self.xout = interpolate.splprep(points, s=0, per=1)
+            elif per_flag is False:
+                self.pars, self.xout = interpolate.splprep(points, s=0)
         except Exception as e:
             print(e)
             raise(ValueError('Pattern and contour dimensions probably mismatch.'))
@@ -217,6 +257,7 @@ class BsplineGen():
     def generate_bspline_sample(self, nmbPts=None):
         '''returns sampled bspline by nmbPts'''
         nmbPts = nmbPts or self.nmbPts
+        nmbPts = int(nmbPts)
         u_interp = np.linspace(self.xout.min(), self.xout.max(), nmbPts)
 
         return np.transpose(np.array(interpolate.splev(u_interp, self.pars)))
@@ -263,11 +304,12 @@ def smooth_contours_w_butterworth(contour, fltr_ordr, norm_cutoff_freq, fltr_typ
     cmplx_sgnl = x_coord + 1.0j*y_coord
 
     # # https://dsp.stackexchange.com/questions/49460/apply-low-pass-butterworth-filter-in-python
+    # TODO: this looks wrong. Pycharm warns of too many values to unpack
     b, a = signal.butter(fltr_ordr, norm_cutoff_freq, fltr_type_str)
     return signal.filtfilt(b, a, cmplx_sgnl)
 
 
-def plot_displacement_scatter(data, title):
+def plot_displacement_scatter(data, title, aspect_ratio=1.0):
     # plot displacement as scatter to make it easy to determine if enough trajectory points visually
     dt = 0.1
     # dx = traj_bspline.reshape(-1,2)[:,0]
@@ -277,12 +319,13 @@ def plot_displacement_scatter(data, title):
     print(np.max(np.diff(dx)))
     print(np.max(np.diff(dy)))
     fig1 = plt.figure()
-    ax1 = set_up_2dplot(fig1, 'x','' , 20, 12)
+    ax1 = set_up_2dplot(fig1, 'x','y' , 20, 12)
     # ax1.scatter(np.arange(0,dt*len(dx),dt),dx)
     # ax1.scatter(np.arange(0,dt*len(dy),dt),dy)
     ax1.scatter(dx, dy, linewidths=1, s=20)
+    ax1.set_aspect(aspect_ratio)
     #ax1.grid()
-    plt.show()
+    plt.show(block=False)
 
 
 def get_contour_primitive(curve_primitive):

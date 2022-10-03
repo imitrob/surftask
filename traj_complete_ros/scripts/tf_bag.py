@@ -362,10 +362,10 @@ class BagTfTransformer(object):
         :return: a list representing the succession of frames from the tf tree root to the provided one
         """
         frame_chain = [frame]
-        chain_link = filter(lambda tt: tt[1] == frame, self.getTransformFrameTuples())
+        chain_link = list(filter(lambda tt: tt[1] == frame, self.getTransformFrameTuples()))
         while chain_link and frame_chain[-1] != early_stop_frame:
             frame_chain.append(chain_link[0][0])
-            chain_link = filter(lambda tt: tt[1] == frame_chain[-1], self.getTransformFrameTuples())
+            chain_link = list(filter(lambda tt: tt[1] == frame_chain[-1], self.getTransformFrameTuples()))
         return list(reversed(frame_chain))
 
     def getChain(self, orig_frame, dest_frame):

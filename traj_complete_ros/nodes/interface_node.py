@@ -22,6 +22,7 @@ from traj_complete_ros.geometry import R_axis_angle
 from traj_complete_ros.utils import contour_msg2list, ftl_pcl2numpy, ftl_numpy2pcl, getTransformFromTF, BsplineGen
 from traj_complete_ros.LoggerProxy import LoggerProxy
 from traj_complete_ros.apply_pattern_to_contour import apply_pattern_to_contour, ApproxMethod
+from traj_complete_ros.plotting import rotation_bw2_vectors, plot3D, plot_quaternions, plot_quivers, generate_orientations, generate_quaternions, plot_curve_o3d, rotation_bw2_vectors
 import open3d as o3d
 import tf2_ros
 import tf.transformations as tftrans
@@ -30,6 +31,10 @@ from uuid import uuid4
 import sys
 import time
 import traceback
+from scipy.spatial.transform import Rotation
+from typing import Union, Optional, List, Tuple
+from matplotlib import pyplot as plt
+import traceback as tb
 
 
 class UI(object):
@@ -43,8 +48,7 @@ class UI(object):
         contour_topic = rospy.get_param("/contour_topic", '/contour/raw')
         self.color_frame_id = rospy.get_param("/color_frame_id", "camera_color_optical_frame")
         self.pcl_frame_id = rospy.get_param("/pcl_frame_id", "camera_depth_optical_frame")
-        self.table_frame_id = rospy.get_param("/table_frame_id", 'camera_link')
-        # self.table_frame_id = rospy.get_param("/table_frame_id", 'table1')
+        self.table_frame_id = rospy.get_param("/table_frame_id", 'table1')
         self.show_pcl = show_pcl
         self.show_full_pcl = full_pcl
         self.show_orig_pcl = original_pcl
@@ -67,6 +71,7 @@ class UI(object):
         self.pattern_trim_start = self.config["pattern_trim_start"]
         self.pattern_trim_trail = self.config["pattern_trim_trail"]
         self.pcl_interpolation = self.config["pcl_interpolation"]
+        self.normal_estimation = self.config["normal_estimation"]
 
         self._bridge = CvBridge()
         self.pauseUpdate = False
@@ -77,9 +82,10 @@ class UI(object):
         self.contour_offsetX = 0
         self.contour_offsetY = 0
         self.selected_contour = -1
-        self.curve = None
-        self.xyz, self.rgb = None, None
-        self.custom_contour = None
+        self.curve: Optional[np.ndarray] = None
+        self.xyz: Optional[np.ndarray] = None
+        self.rgb: Optional[np.ndarray] = None
+        self.custom_contour: Optional[Union[np.ndarray, List]] = None
         self.is_drawing = False
         self.is_executing = False
         self.window_name = 'contour image'
@@ -100,6 +106,8 @@ class UI(object):
             self.distCoeffs = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
             self.input_image = np.zeros((self.cam_intrinsics.height, self.cam_intrinsics.width, 3), dtype=np.uint8)
         else:
+            img_msg: Optional[Image]
+            cameraInfo_msg: Optional[CameraInfo]
             try:
                 img_msg = rospy.wait_for_message(color_topic, Image, 15.0)
                 cameraInfo_msg = rospy.wait_for_message(camInfo_topic, CameraInfo, 15.0)
@@ -195,52 +203,6 @@ class UI(object):
         cv2.imshow("contour", image)
         cv2.waitKey(0)
 
-    def applyCurve(self):
-        """ Apply curve to the selected contour. The contour will be stored in "current_contour" variable.
-        """
-        if self.custom_contour is not None:  # if there is a custom contour, select that by default
-            current_contour = self.custom_contour
-        elif self.selected_contour >= 0:  # otherwise if some other contour is selected, use that
-            current_contour = self.contours[self.selected_contour]
-        else:
-            rospy.logwarn("No contour selected, cannot apply curve!")
-            return
-
-        # for now, apply random noise
-        # m = np.zeros((self.cam_intrinsics.height, self.cam_intrinsics.width), dtype=np.uint8)
-        # cv2.fillPoly(m, [current_contour + np.random.randint(-10, 10, current_contour.shape)], 255, 1)
-        # m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=3)
-        # self.curve, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        # self.curve = self.curve[-1]
-
-        n_points = current_contour.shape[0] * self.CURVE_UPSAMPLING_FACTOR
-        #current_contour.shape[0] * self.CURVE_UPSAMPLING_FACTOR
-
-        bsp = BsplineGen.fromLibraryData(**self.config["curve_library"][self.patternType])
-        print('self.patternType: {}'.format(self.patternType))
-        n_points = max([bsp.nmbPts * self.num_pattern_reps, 2*current_contour.shape[0], 200])
-        try:
-            contour_splined = np.array(list(reversed(BsplineGen.fromWaypoints(current_contour).generate_bspline_sample(n_points))))
-        except:
-            contour_splined = current_contour
-        applied_bsp = apply_pattern_to_contour(bsp, contour_splined, self.num_pattern_reps,
-                                               approx_method=self.approx_method, pattern_rotation=self.pattern_rotation,
-                                               pattern_trim_start=self.pattern_trim_start,
-                                               pattern_trim_trail=self.pattern_trim_trail,
-                                               use_gap=self.pattern_gap)
-        self.curve = applied_bsp.generate_bspline_sample(n_points)[
-            :, np.newaxis, :]
-        # self.curve = np.round(applied_bsp.generate_bspline_sample(n_points)[:, np.newaxis, :]).astype(np.int)
-        # self._drawCTlineByline(self.curve)
-        self.redrawContours()
-
-    def select_contour_pars(self, BsplineGen):
-        # TODO: user should see the given pattern applied along line and along given contour (circle?)
-        # TODO: user selects parameters - trimming, rotation, gap between patterns to connect them (this maybe is set automatically)
-        # TODO: these parameters are saved along with the bspline to the library
-        print('to be implemented')
-        return
-
     def selectContour(self, x, y):
         """Tries to select a contour by position. The x, y coordinates are of a point (typically from a mouse click)
         that is used to locate the contour. If the point lies inside a contour, that contour is selected.
@@ -281,25 +243,72 @@ class UI(object):
                 rospy.logwarn("No contours to select!")
         self.redrawContours()
 
+    def applyCurve(self):
+        """ Apply curve to the selected contour. The contour will be stored in "current_contour" variable.
+        """
+        rospy.loginfo("Applying pattern to the contour")
+        if self.custom_contour is not None:  # if there is a custom contour, select that by default
+            current_contour = self.custom_contour
+        elif self.selected_contour >= 0:  # otherwise if some other contour is selected, use that
+            current_contour = self.contours[self.selected_contour]
+        else:
+            rospy.logwarn("No contour selected, cannot apply curve!")
+            return
+
+        n_points = current_contour.shape[0] * self.CURVE_UPSAMPLING_FACTOR
+
+        bsp = BsplineGen.fromLibraryData(**self.config["curve_library"][self.patternType])
+        print('pattern type')
+        print(self.patternType)
+        print('self.patternType: {}'.format(self.patternType))
+        n_points = max([bsp.nmbPts * self.num_pattern_reps, 2*current_contour.shape[0], 200])
+        n_points = 401  # FIXME: Why is this fixed?
+        print("gap: {}".format(self.pattern_gap))
+        try:
+            contour_splined = np.array(list(reversed(BsplineGen.fromWaypoints(current_contour).generate_bspline_sample(n_points))))
+        except:
+            contour_splined = current_contour
+
+        plt.ion()
+        try:
+            applied_bsp = apply_pattern_to_contour(bsp, contour_splined, self.num_pattern_reps,
+                                                approx_method=self.approx_method, pattern_rotation=self.pattern_rotation,
+                                                pattern_trim_start=self.pattern_trim_start,
+                                                pattern_trim_trail=self.pattern_trim_trail,
+                                                use_gap=self.pattern_gap,
+                                                # numer_of_points=302,
+                                                debug=False)
+            nd_curve = applied_bsp.generate_bspline_sample(n_points)[:, np.newaxis, :]
+        except BaseException as e:
+            rospy.logerr(f"There was an error whilst trying to apply the pattern:\n{e}")
+            tb.print_exc()
+            return
+
+        nd_curve = nd_curve.squeeze()
+        # plot_curve_o3d(nd_curve[:, :3], nd_curve[:, 3:], scale = 10)
+
+        # split the nd_curve into 2D points, z_axis, orientations
+        self.curve = nd_curve[:, :2][:, np.newaxis, :]
+        self.curve_z_values = nd_curve[:, 2]
+        self.curve_orientations = nd_curve[:, 3:]
+
+        self.redrawContours()
+
     def compute3DCurve(self):
         """ For a generated 2D curve, computes the corresponding 3D points and estimates normals for them.
         """
         # TODO: add option to compute "flat 3D" curve
         # TODO: pattern "drop-of-edge" warning
-        # get transformation from PCL to RGB image
-        trans, rmat = getTransformFromTF(self.depth_to_color_tf)
-        points_in_color_frame = np.dot(rmat, self.xyz.T) + trans
-        # points_in_color_frame = self.xyz.T
+        rospy.loginfo("Computing 3D curve from 2D")
+        # get transformation from PCL to RGB image - not needed if depth/rgb is aligned
+        # trans, rmat = getTransformFromTF(self.depth_to_color_tf)
+        # points_in_color_frame = np.dot(rmat, self.xyz.T) + trans
+        points_in_color_frame = self.xyz.T
 
         # create Open3D PCL from numpy PCL
         self.pcd.points = o3d.utility.Vector3dVector(points_in_color_frame.T)
-        self.pcd.normals = o3d.utility.Vector3dVector(np.ones_like(self.xyz))
-        rgb_as_f = self.rgb.astype(np.float) / 255  # normalize to <0, 1> range
+        rgb_as_f = self.rgb.astype(float) / 255  # normalize to <0, 1> range
         self.pcd.colors = o3d.utility.Vector3dVector(rgb_as_f[..., ::-1])
-
-        # compute normals
-        self.pcd.orient_normals_towards_camera_location()  # need to pre-orient normals to remove ambiguity in the normal estimation
-        self.pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30), fast_normal_computation=False)
 
         # PCL interp
         if self.pcl_interpolation:
@@ -308,14 +317,14 @@ class UI(object):
             # std = np.std(d)
             # radii = [np.min(d), med - std, med, med + std, np.max(d)]
             # tmesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(self.pcd, o3d.utility.DoubleVector(radii))
-            tmesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(self.pcd, 7)
+            tmesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(self.pcd, depth=7)
             pcd = tmesh.sample_points_uniformly(int(1e6))
-            # o3d.visualization.draw_geometries([pcl])
+            # o3d.visualization.draw_geometries([pcd])
         else:
             pcd = self.pcd
 
         # project PCL to 2D
-        zilch = np.zeros((3, 1), dtype=np.float32)
+        zilch = np.zeros((3, 1), dtype=float)
         points_2d, _ = cv2.projectPoints(np.array(pcd.points), zilch, zilch, self.camera_matrix, self.distCoeffs)
         # clip points projected outside of the image
         # points_2d = np.clip(np.floor(points_2d.squeeze()).astype(np.int16), (0, 0), (self.cam_intrinsics.width - 1, self.cam_intrinsics.height - 1))  # it's x, y!
@@ -327,19 +336,27 @@ class UI(object):
         # contour_pt_idx = np.where(mask[points_2d[..., 1], points_2d[..., 0]] == 255)[0]
 
         # contour_pt_idx = [np.argmin((np.abs(points_2d - cpt)).sum(axis=1)) for cpt in self.curve.squeeze()]
+
+        # select all points from PCL (projected to image) closer to the 2D curve points then a threshold
         curve = self.curve.squeeze()
         pcl = np.array(pcd.points)
         diffs = [np.linalg.norm(points_2d - cpt, axis=1) for cpt in curve]
-        curve_3d = np.full((curve.shape[0], 3), np.inf, dtype=np.float)
+        curve_3d = np.full((curve.shape[0], 3), np.inf, dtype=float)
         for i, (df, p) in enumerate(zip(diffs, self.curve.squeeze())):
             close = np.where(df < 2)[0]
             w = df[close].ravel()
             if np.sum(w) == 0:
                 continue
             w = np.abs(1 - (w / w.sum() + 1e-10))
+            # compute a weighted average of the selected points
             curve_3d[i, :] = np.average(pcl[close, :], weights=w, axis=0)
 
-        curve_3d = curve_3d[np.logical_not(np.any(np.isinf(curve_3d), axis=1)), :]
+        # filter out invalid points
+        invalid_point_indices = np.logical_not(np.any(np.isinf(curve_3d), axis=1))
+        curve_3d = curve_3d[invalid_point_indices, :]
+        self.curve_orientations = self.curve_orientations[invalid_point_indices, :]
+        self.curve_z_values = self.curve_z_values[invalid_point_indices]
+
         if self.c_smoothing_enabled:
             half = self.c_smoothing_kernel_size >> 1
             curve_3d_padded = np.vstack((
@@ -362,26 +379,76 @@ class UI(object):
         #     unpad_amount = int(padding_amount * (up_samp_amount / down_samp_amount))
         #     curve_3d = data_resamp[unpad_amount:-unpad_amount, :]
 
-        # self.curve_pcd = self.pcd.select_down_sample(contour_pt_idx)
-        # fake_points = np.hstack((self.curve.squeeze(), np.ones((self.curve.shape[0], 1))))
         self.curve_pcd = o3d.geometry.PointCloud()
         self.curve_pcd.points = o3d.utility.Vector3dVector(curve_3d)
         self.curve_pcd.paint_uniform_color([1, 0.0, 0.2])
-        self.curve_pcd.normals = o3d.utility.Vector3dVector(np.ones_like(curve_3d))
+
+        # >>> estimate curve normals <<<
+        self.curve_pcd.estimate_normals()
         self.curve_pcd.orient_normals_towards_camera_location()  # need to pre-orient normals to remove ambiguity in the normal estimation
-        self.curve_pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30), fast_normal_computation=False)
+        # compute normals
+        self.pcd.estimate_normals()
+        self.pcd.orient_normals_towards_camera_location()  # need to pre-orient normals to remove ambiguity in the normal estimation
+        self.pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30), fast_normal_computation=False)
+
+        if self.normal_estimation == "pcd":  # estimate normals from the input PCL
+            previous_valid_normal = self.curve_pcd.normals[0]
+            pcd_tree = o3d.geometry.KDTreeFlann(self.pcd)
+
+            for ci, cp in enumerate(self.curve_pcd.points):
+                n_found, idxs, _ = pcd_tree.search_hybrid_vector_3d(cp, 0.01, 1)  # 1-NN within 1cm
+                if n_found > 0:  # found a closest point
+                    idx = idxs[0]
+                    previous_valid_normal = self.pcd.normals[idx]
+                    self.curve_pcd.normals[ci] = previous_valid_normal  # copy normal from the closest point
+                else:  # no closest point found
+                    self.curve_pcd.normals[ci] = previous_valid_normal  # copy previous valid normal (not refactored for readability)
+        elif self.normal_estimation == "curve":  # estimate for the curve separately (old method)
+            self.curve_pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30), fast_normal_computation=False)
+        else:
+            raise Exception(f"Unknown normal estimation method '{self.normal_estimation}'")
+
         # self.curve_pcd.points = o3d.utility.Vector3dVector(np.array(self.pcd.points)[contour_pt_idx, :])
         # self.curve_pcd.normals = o3d.utility.Vector3dVector(np.array(self.pcd.normals)[contour_pt_idx, :])
         # self.curve_pcd.colors = o3d.utility.Vector3dVector(np.array(self.pcd.colors)[contour_pt_idx, :])
         self.current_curve_len = np.array(self.curve_pcd.points).shape[0]
 
         abbox = o3d.geometry.AxisAlignedBoundingBox.create_from_points(self.curve_pcd.points)
-        abbox.scale(2, True)
+        abbox.scale(2, abbox.get_center())
         cropped_pcd = pcd.crop(abbox)
         cropped_pcd_orig = self.pcd.crop(abbox)
 
+        # plane_model, inliers = self.pcd.segment_plane(distance_threshold=0.003, ransac_n=30, num_iterations=1000)
+        # [a, b, c, d] = plane_model
+        # print(f"Plane equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
+        # print(f"Number of points: {len(inliers)}")
+        # mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.1, origin=[0, 0, 0])
+
+        # self.pcd.orient_normals_to_align_with_direction(plane_model[:3])
+        # self.pcd.orient_normals_towards_camera_location()
+        # self.pcd.estimate_normals()
+        # inlier_cloud = self.pcd.select_by_index(inliers)
+        # inlier_cloud.paint_uniform_color([1.0, 0, 0])
+        # outlier_cloud = self.pcd.select_by_index(inliers, invert=True)
+        # o3d.visualization.draw_geometries([inlier_cloud, outlier_cloud, mesh_frame])
+
         self.curve_points, self.curve_normals = np.array(self.curve_pcd.points), np.array(self.curve_pcd.normals)
+        curve_fixed_z = self.curve_points.copy()
+        # curve_fixed_z[:, 2] = 0
         # self.curve_points, self.curve_normals = self.publish_pcl(self.curve_pcd, cropped_pcd)
+
+        # >>> ORIENT ORIENTATIONS ACOORDING TO NORMALS <<<
+        z_axis = np.r_[0, 0, 1]
+        oriented_orientations = []
+        final_orientation = self.curve_orientations[0, :]
+        for normal, orientation in zip(self.curve_normals, self.curve_orientations):
+            normal_2_zee = rotation_bw2_vectors(z_axis, normal)
+            if not np.isnan(normal_2_zee.magnitude()):
+                final_orientation = (normal_2_zee * Rotation.from_quat(orientation)).as_quat()
+            oriented_orientations.append(final_orientation)
+
+        self.curve_orientations = np.array(oriented_orientations)
+        plot_curve_o3d(curve_fixed_z, self.curve_orientations, scale=0.05, show_axis=False)
 
         if self.show_pcl or self.show_full_pcl or self.show_orig_pcl:
             # self.curve_pcd.paint_uniform_color([1, 0, 0])
@@ -397,8 +464,10 @@ class UI(object):
             vis.create_window(window_name="Curve visualization", width=1920, height=1012)
             # vis.lookat()
             ctr = vis.get_view_control()
+            mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
 
             vis.add_geometry(lineSet)
+            vis.add_geometry(mesh_frame)
             if self.show_orig_pcl:
                 vis.add_geometry(cropped_pcd_orig)
             elif self.show_full_pcl:
@@ -406,14 +475,97 @@ class UI(object):
             if self.show_pcl:
                 vis.add_geometry(self.curve_pcd)
 
-            # param = o3d.io.read_pinhole_camera_parameters("/home/syxtreme/tan_ws/src/icra-2021-trajectory-autocompletion-tan-thesis/traj_complete_ros/config/viewpoint.json")
+            # param = o3d.io.read_pinhole_camera_parameters("viewpoint.json")
             # ctr.convert_from_pinhole_camera_parameters(param)
             ctr.change_field_of_view(5.0)
             vis.run()
             param = vis.get_view_control().convert_to_pinhole_camera_parameters()
-            o3d.io.write_pinhole_camera_parameters("/home/syxtreme/tan_ws/src/icra-2021-trajectory-autocompletion-tan-thesis/traj_complete_ros/config/viewpoint3.json", param)
+            o3d.io.write_pinhole_camera_parameters("viewpoint.json", param)
             vis.destroy_window()
         return np.size(self.curve_pcd.points) > 0
+
+    def sendCurve(self, log_name=""):
+        """If there is a pointcloud for a curve, sends it to the controller as goal
+        """
+        rospy.loginfo("Sending curve to robot")
+        from datetime import datetime
+        log_name = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        if self.curve_pcd is None:
+            rospy.logwarn("The curve pointcloud hasn't been computed, yet. Cannot send goal to the controller.")
+            return
+
+        timestamp = rospy.Time.now()
+        trans, rmat = getTransformFromTF(self.color_to_table_tf)
+
+        robot_rotation = Rotation.from_matrix(rmat)
+        c_points = (np.dot(rmat, self.curve_points.T) + trans).T  # + np.r_[0, 0, -0.011]
+        c_normals = np.dot(rmat, self.curve_normals.T).T
+        c_quats = [(robot_rotation * Rotation.from_quat(co)).as_quat() for co in self.curve_orientations]  # FIXME: is this correct? (it is not nice but...)
+        # FIXME: the next two lines are for testing only. Commnet them out and uncomment the one above.
+        # first_quat = (robot_rotation * Rotation.from_quat(self.curve_orientations[0, :])).as_quat()
+        # c_quats = [first_quat for co in self.curve_orientations]  # FIXME: is this correct? (it is not nice but...)
+
+        plot_curve_o3d(c_points, c_quats, scale=0.05, show_axis=True)
+
+        self.is_done = False
+        self.last_execution_result = False
+        exec_options = ExecutionOptions(
+            executor_engine=self.exec_engine,
+            cart_vel_limit=self.cart_speed,
+            tool_orientation=ExecutionOptions.USE_TOOL_ORIENTATION
+        )
+
+        # publish trajectory for visualization
+        marker = Marker(
+            header=Header(
+                stamp=timestamp,
+                frame_id=self.table_frame_id
+            ),
+            # pose=Pose(
+            #     position=Point(**{k: v for k, v in zip(["x", "y", "z"], p)}),
+            #     # orientation=Vector3(**{k: v for k, v in zip(["x", "y", "z"], n)}),
+            # ),
+            id=10001,
+            type=Marker.LINE_STRIP,
+            action=Marker.ADD,
+            points=[Point(**{k: v for k, v in zip(["x", "y", "z"], p)}) for p in c_points],
+            lifetime=rospy.Duration(0),
+            scale=Vector3(x=0.001, y=0.001, z=0.001),
+            color=ColorRGBA(r=0.2, g=0.9, b=0.3, a=0.9)
+        )
+        self.vis_pub.publish(marker)
+
+        exec_options.executor_engine = ExecutionOptions.DESCARTES_TOLERANCED_PLANNING
+
+        goal = CurveExecutionGoal(
+                header=Header(frame_id="table2"),
+                # header=Header(frame_id=self.table_frame_id),
+                opt=exec_options,
+                curve=[Point(**{k: v for k, v in zip(["x", "y", "z"], p)}) for p in c_points],
+                orientations=[Quaternion(**{k: v for k, v in zip(["x", "y", "z", "w"], q)}) for q in c_quats],
+                normals=[Vector3(**{k: v for k, v in zip(["x", "y", "z"], n)}) for n in c_normals],
+            )
+        if log_name:
+            LoggerProxy.logger(action=LoggingTask.RESET)
+            LoggerProxy.logger(action=LoggingTask.SETREFERENCE, data=goal)
+            LoggerProxy.logger(action=LoggingTask.START)
+
+            def my_done_cb(success_code, msg):
+                LoggerProxy.logger(action=LoggingTask.STOP)
+                if success_code == actionlib.GoalStatus.SUCCEEDED:
+                    fp = os.path.expanduser('~/traj_complete_log/') + log_name + ".json"
+                    LoggerProxy.logger(action=LoggingTask.SAVE, data=fp)
+                else:
+                    print('Execution failed, not saving the log!')
+                self.done_cb(success_code, msg)
+            done_cb = my_done_cb
+        else:
+            done_cb = self.done_cb
+
+        self.action_client.send_goal(
+            goal,
+            done_cb, self.active_cb, self.feedback_cb
+        )
 
     def publish_pcl(self, curve_pcd, object_pcd):
         curve = np.pad(np.array(curve_pcd.points), ((0, 0), (0, 1)), mode="constant", constant_values=1)
@@ -461,83 +613,6 @@ class UI(object):
         self.curve_pcd.paint_uniform_color([1, 0.0, 0.2])
         self.curve_pcd.normals = o3d.utility.Vector3dVector(self.curve_normals)
         self.current_curve_len = np.array(self.curve_pcd.points).shape[0]
-
-    def sendCurve(self, log_name=""):
-        """If there is a pointcloud for a curve, sends it to the controller as goal
-        """
-        from datetime import datetime
-        log_name = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-        if self.curve_pcd is None:
-            rospy.logwarn("The curve pointcloud hasn't been computed, yet. Cannot send goal to the controller.")
-            return
-
-        timestamp = rospy.Time.now()
-        trans, rmat = getTransformFromTF(self.color_to_table_tf)
-
-        c_points = (np.dot(rmat, self.curve_points.T) + trans).T + np.r_[0, 0, -0.011]
-        c_normals = np.dot(rmat, self.curve_normals.T).T
-
-        # TODO: this was for real exps, I guess and it should be removed.
-        # c_points[:,2] = 0.035
-
-        self.is_done = False
-        self.last_execution_result = False
-        exec_options = ExecutionOptions(
-            executor_engine=self.exec_engine,
-            cart_vel_limit=self.cart_speed
-        )
-
-        # publish trajectory for visualization
-        marker = Marker(
-            header=Header(
-                stamp=timestamp,
-                frame_id=self.table_frame_id
-            ),
-            # pose=Pose(
-            #     position=Point(**{k: v for k, v in zip(["x", "y", "z"], p)}),
-            #     # orientation=Vector3(**{k: v for k, v in zip(["x", "y", "z"], n)}),
-            # ),
-            id=10001,
-            type=Marker.LINE_STRIP,
-            action=Marker.ADD,
-            points=[Point(**{k: v for k, v in zip(["x", "y", "z"], p)}) for p in c_points],
-            lifetime=rospy.Duration(0),
-            scale=Vector3(x=0.001, y=0.001, z=0.001),
-            color=ColorRGBA(r=0.1, g=0.9, b=0.7, a=0.8)
-        )
-        self.vis_pub.publish(marker)
-
-        exec_options.executor_engine = ExecutionOptions.DESCARTES_TOLERANCED_PLANNING
-
-        goal = CurveExecutionGoal(
-                header=Header(frame_id="table2"),
-                # header=Header(frame_id=self.table_frame_id),
-                opt=exec_options,
-                curve=[Point(**{k: v for k, v in zip(["x", "y", "z"], p)}) for p in c_points],
-                normals=[Vector3(**{k: v for k, v in zip(["x", "y", "z"], n)}) for n in c_normals],
-            )
-        if log_name:
-            LoggerProxy.logger(action=LoggingTask.RESET)
-            LoggerProxy.logger(action=LoggingTask.SETREFERENCE, data=goal)
-            LoggerProxy.logger(action=LoggingTask.START)
-
-            def my_done_cb(success_code, msg):
-                LoggerProxy.logger(action=LoggingTask.STOP)
-                if success_code == actionlib.GoalStatus.SUCCEEDED:
-                    # fp = "/home/behrejan/traj_complete_log/" + log_name + ".json"
-                    fp = os.path.expanduser('~/traj_complete_log/') + log_name + ".json"
-                    LoggerProxy.logger(action=LoggingTask.SAVE, data=fp)
-                else:
-                    print('Execution failed, not saving the log!')
-                self.done_cb(success_code, msg)
-            done_cb = my_done_cb
-        else:
-            done_cb = self.done_cb
-
-        self.action_client.send_goal(
-            goal,
-            done_cb, self.active_cb, self.feedback_cb
-        )
 
     def change_curveType(self, val):
         self.patternType = self.patternChoices[val]
@@ -615,9 +690,36 @@ class UI(object):
         except:  # noqa
             pass
 
-    def selectAndSendCurve(self, save=False, log_name=""):
+    def createCustomAndSend(self, save=False, log_name=""):
+        rospy.loginfo("Sending custom contour curve")
         while self.last_update is None:
             self.rate.sleep()
+            rospy.logwarn("No images received, waiting...")
+
+        img = np.zeros(self.input_image.shape[:2], dtype=np.uint8)
+        img = cv2.ellipse(img, tuple((np.r_[img.shape[1], img.shape[0]].T / 2).astype(int).tolist()), (50, 100), 0, 0, 360, 255)
+        contours, c_hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        self.custom_contour = contours[0].squeeze()
+
+        self.pauseUpdate = True
+        self.applyCurve()
+        self.compute3DCurve()
+
+        if save:  # if save -> save curve and don't send
+            np.savez("curve_{}".format(str(uuid4())), points=np.array(self.curve_pcd.points), curve_pcd=self.curve_pcd)
+            return
+
+        self.sendCurve(log_name=log_name)
+
+        while not self.is_done:
+            self.rate.sleep()
+        rospy.signal_shutdown("I am done!")
+
+    def selectAndSendCurve(self, save=False, log_name=""):
+        rospy.loginfo("Sending real curve")
+        while self.last_update is None:
+            self.rate.sleep()
+            rospy.logwarn("No images received, waiting...")
         self.pauseUpdate = True
         self.contour_scale = -20
         self.contour_offsetY = -4
@@ -644,6 +746,7 @@ class UI(object):
         :param curve_primitive: curve curve_primitive msg
         :return: None
         '''
+        rospy.loginfo("Sending test curve")
         nr_points = 250
         assert isinstance(curve_primitive, ContourPrimitive)
         if curve_primitive.type == ContourPrimitive.SPIRAL:
@@ -656,6 +759,7 @@ class UI(object):
 
             curve_points = np.array([[R * np.sin(counter), R * np.cos(counter), h] for counter, R, h in zip(counters, factors, heights)])
             curve_normals = np.array([curve_primitive.normal for _ in range(nr_points)])
+
         if curve_primitive.type == ContourPrimitive.RECTANGLE:
             nr_points_a = int(curve_primitive.a * curve_primitive.res)
             nr_points_b = int(curve_primitive.b * curve_primitive.res)
@@ -774,7 +878,7 @@ class UI(object):
         cv2.createTrackbar('offset X', self.window_name, 128, 256, self.adjust_offsetX)
         cv2.createTrackbar('offset Y', self.window_name, 128, 256, self.adjust_offsetY)
         cv2.createTrackbar('num of reps', self.window_name, self.num_pattern_reps, 128, self.set_numOfReps)
-        cv2.createTrackbar('pattern type', self.window_name, np.where(np.array(self.patternChoices) == self.patternType)[0], len(self.patternChoices) - 1, self.change_curveType)
+        cv2.createTrackbar('pattern type', self.window_name, np.where(np.array(self.patternChoices) == self.patternType)[0].tolist()[0], len(self.patternChoices) - 1, self.change_curveType)
         cv2.createTrackbar('approx method', self.window_name, int(np.log2(self.approx_method)), 2, self.change_approxMethod)
         cv2.createTrackbar('z computation', self.window_name, int(self.z_comp == "flat"), 1, self.change_z_computation)
         cv2.createTrackbar('pattern rotation', self.window_name, 180 + self.pattern_rotation, 360, self.change_pattern_rotation)
@@ -841,14 +945,12 @@ class UI(object):
     def perception_cb(self, color_msg, contours_msg, pcl_msg=None):
         """Message callback. Gathers color image, contours and pcl messages and applies basic processing.
         """
-        rospy.logwarn("update!")
+        rospy.logwarn("image update")
         if not self.pauseUpdate:  # self.pauseUpdate == user requested that the image is not updated
             try:
                 # get tf from depth -> rgb to align the PCL
                 self.depth_to_color_tf = self.tf_buffer.lookup_transform(self.color_frame_id, self.pcl_frame_id, pcl_msg.header.stamp)
                 self.color_to_table_tf = self.tf_buffer.lookup_transform(self.table_frame_id, self.color_frame_id, pcl_msg.header.stamp)
-                # self.depth_to_color_tf = self.tf_buffer.lookup_transform(self.pcl_frame_id, self.color_frame_id, pcl_msg.header.stamp)
-                # self.color_to_table_tf = self.tf_buffer.lookup_transform(self.color_frame_id, self.table_frame_id, pcl_msg.header.stamp)
             except Exception as e:
                 rospy.logerr("Could not get depth_to_color or color_to_table transform because: {}".format(e))
             else:
@@ -865,6 +967,7 @@ class UI(object):
         Args:
             autoRedraw (bool, optional): Whether to also update the image in GUI at the end. Defaults to True.
         """
+        rospy.loginfo("Recalculating contours")
         # create empty mask
         mask = np.zeros((self.cam_intrinsics.height, self.cam_intrinsics.width), dtype=np.uint8)
         # paint contours as areas into it
@@ -890,6 +993,7 @@ class UI(object):
     def redrawContours(self):
         """Updates the image in GUI. Draws the current contours into the color image.
         """
+        rospy.loginfo("Redrawing contours")
         self.contour_image = cv2.drawContours(self.input_image.copy(), self.contours, -1, (0, 128, 128), 1)  # draw contours into image
         if not self.contours:
             return
@@ -914,7 +1018,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--nogui", "-n", action="store_true", default=False, help="A flag to start the node without the user interface (default params are read from yaml, mode of operation  must be *single*).")
-    parser.add_argument("--test1", "-t", action="store_true", default=False, help="A flag to start the node without the user interface and just send a test curve to the control node.")
+    parser.add_argument("--test", "-t", choices=[1, 2], default=False, help="A flag to start the node without the user interface and just send a test curve to the control node.")
     parser.add_argument("--show-pcl", "-p", action="store_true", default=False, help="Turns on PCL visualization.")
     parser.add_argument("--full-pcl", "-f", action="store_true", default=False, help="Draws 3D curve on top of the entire PCL.")
     parser.add_argument("--original-pcl", "-o", action="store_true", default=False, help="Draws 3D curve on top of the entire PCL.")
@@ -922,67 +1026,75 @@ if __name__ == "__main__":
     parser.add_argument("--config", "-c", nargs=1, type=str, default="config/default_configuration.yaml", help="Path to configuration file, relative to the package.")
     parser.add_argument("--experiment", "-e", nargs="+", default=[], help="")
     parser.add_argument("--artificial", "-a", type=str, default='', help="Compose and send artificial curve from a dictionary.")
-    args = parser.parse_args()
+    args = parser.parse_known_args()[0]
 
     rospack = rospkg.RosPack()
     with open(os.path.join(rospack.get_path('traj_complete_ros'), args.config), "r") as f:
         cfg = yaml.load(f, Loader=yaml.SafeLoader)
-        print('config: {}'.format(cfg))
+        # print('config: {}'.format(cfg))
 
     if (args.nogui or args.save_curve) and not args.test1:
         ui = UI(config=cfg, show_pcl=args.show_pcl, full_pcl=args.full_pcl, original_pcl=args.original_pcl)
         ui.selectAndSendCurve(save=args.save_curve)
-    elif args.test1:
-        cfg['pattern_rotation'] = 20.0
-        cfg['num_of_reps'] = 10
-        ui = UI(config=cfg, no_wait=True, show_pcl=args.show_pcl, full_pcl=args.full_pcl)
-        cp = ContourPrimitive()
-        cp.a = 0.2
-        cp.b = 0.1
-        cp.ccw = False
-        cp.pose.position.x = 0.2
-        cp.pose.orientation.w = 1
-        cp.type = ContourPrimitive.SPIRAL
-        cp.r_start = 0.05
-        cp.r_end = 0.05
-        cp.rounds = 1.0
-        cp.normal = [0, 0, 1]
-        cp.h_start = 0.02
-        cp.h_end = 0.02
-        cp.res = 100
-        opt = ExecutionOptions()
-        # opt.executor_engine = ExecutionOptions.MOVEIT_CART_PLANNING
-        opt.executor_engine = ExecutionOptions.DESCARTES_TOLERANCED_PLANNING
-        opt.cart_vel_limit = 0.1
-        # opt.executor_engine = ExecutionOptions.RELAXEDIK
-        opt.tool_orientation = ExecutionOptions.USE_FIXED_ORIENTATION
-        # ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='hand_knot_sfr')
-        ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='None')
-
+    elif args.test:
+        test_case = int(args.test)
+        if test_case == 1:
+            cfg['pattern_rotation'] = 30.0
+            cfg['num_of_reps'] = 10
+            ui = UI(config=cfg, no_wait=True, show_pcl=args.show_pcl, full_pcl=args.full_pcl)
+            cp = ContourPrimitive()
+            cp.a = 0.2
+            cp.b = 0.1
+            cp.ccw = False
+            cp.pose.position.x = 0.2
+            cp.pose.orientation.w = 1
+            cp.type = ContourPrimitive.SPIRAL
+            cp.r_start = 0.05
+            cp.r_end = 0.05
+            cp.rounds = 1.0
+            cp.normal = [0, 0, 1]
+            cp.h_start = 0.02
+            cp.h_end = 0.02
+            cp.res = 100
+            ui.pattern_gap = 4
+            opt = ExecutionOptions()
+            # opt.executor_engine = ExecutionOptions.MOVEIT_CART_PLANNING
+            opt.executor_engine = ExecutionOptions.DESCARTES_TOLERANCED_PLANNING
+            opt.cart_vel_limit = 0.07
+            # opt.executor_engine = ExecutionOptions.RELAXEDIK
+            opt.tool_orientation = ExecutionOptions.USE_FIXED_ORIENTATION
+            # ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='hand_knot_sfr')
+            ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='big_knot')
+            # ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='hand_knot_f')
+            # ui.SendTestCurve(curve_primitive=cp, exec_options=opt, pattern='None')
+        elif test_case == 2:
+            ui = UI(config=cfg, show_pcl=args.show_pcl, full_pcl=args.full_pcl, original_pcl=args.original_pcl)
+            ui.createCustomAndSend(save=args.save_curve)
     elif args.artificial:
         ui = UI(config=cfg, no_wait=True, show_pcl=args.show_pcl, full_pcl=args.full_pcl)
         ui.color_to_table_tf = TransformStamped(
             transform=Transform(
-                translation=Vector3(0.2, 0, 0.0),
-                rotation=Quaternion(0, 0, 0, 1)
+                translation=Vector3(x=0.2, y=0, z=0.0),
+                rotation=Quaternion(x=0, y=0, z=0, w=1)
             )
         )
         try:
             ui.composeArtificialCurve(args.artificial)
             ui.sendCurve()
         except Exception as e:
-            print(e)
+            print(f"Error executing artificial curve:\n{e}")
             _, _, tb = sys.exc_info()
             traceback.print_tb(tb)
             sys.exit(13)
 
     elif args.experiment:
+        print("Running experiment...")
         data = yaml.safe_load(args.experiment[0])
         print(args.experiment[0])
         rospy.loginfo("Running experiment {}".format(data["name"]))
 
         # set config params
-        fields = ["num_of_reps", "default_pattern", "approx_method", "pcl_interpolation", "cart_vel_limit", "executor_engine", "c_smoothing_enabled", "tool_orientation", "pattern_rotation", "pattern_trim_start", "pattern_trim_trail"]
+        fields = ["num_of_reps", "use_gap", "default_pattern", "approx_method", "pcl_interpolation", "cart_vel_limit", "executor_engine", "c_smoothing_enabled", "tool_orientation", "pattern_rotation", "pattern_trim_start", "pattern_trim_trail"]
         for f in fields:
             if f not in data:
                 continue
@@ -995,7 +1107,7 @@ if __name__ == "__main__":
             try:
                 ui.selectAndSendCurve(log_name=data["name"] + "_" + data["last_time"])
             except Exception as e:
-                print(e)
+                print(f"Error testing on real data:\n{e}")
                 _, _, tb = sys.exc_info()
                 traceback.print_tb(tb)
                 sys.exit(13)
@@ -1003,7 +1115,8 @@ if __name__ == "__main__":
             # cfg['pattern_rotation'] = data['pattern_rotation']
             print('config')
             cfg['num_of_reps'] = 10
-            print(cfg)
+            cfg['pattern_gap'] = int(data["pattern_gap"]) if not np.isnan(data["pattern_gap"]) else 0
+            # print(cfg)
             ui = UI(config=cfg, no_wait=True, show_pcl=args.show_pcl, full_pcl=args.full_pcl)
             cp = ContourPrimitive()
             cp.a = data["a"] if not np.isnan(data["a"]) else 0.2
@@ -1030,7 +1143,7 @@ if __name__ == "__main__":
             try:
                 ui.SendTestCurve(curve_primitive=cp, exec_options=opt, log_name=str(data["name"]) + "_" + data["last_time"], pattern=pattern)
             except Exception as e:
-                print(e)
+                print(f"Error sending test curve:\n {e}")
                 _, _, tb = sys.exc_info()
                 traceback.print_tb(tb)
                 sys.exit(13)

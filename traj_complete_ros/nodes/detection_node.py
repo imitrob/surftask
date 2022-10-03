@@ -81,7 +81,6 @@ class Detector(object):
                 sync_topics = [self._color_sub, self._depth_sub]
 
             self._image_time_sync = message_filters.ApproximateTimeSynchronizer(sync_topics, 5, slop=0.05)
-            self._image_time_sync.registerCallback(self.perception_cb)
         except rospy.ROSException as e:
             print(e)
             exit(22)
@@ -116,6 +115,7 @@ class Detector(object):
             self.cfg_first_run = True
             self.srv = Server(DetectionConfig, self.config_cb)
             self.vis_enabled = False
+            self._image_time_sync.registerCallback(self.perception_cb)
 
     def config_cb(self, config, level):
         ret_msg = ""
