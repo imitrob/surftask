@@ -5,13 +5,13 @@
 """
 from __future__ import print_function, division
 import os
+from typing import Optional
 # import cv2
 from tf_bag import BagTfTransformer
 import os
 import rosbag
 import rospy
 import cv2
-import tf
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage
 import numpy as np
@@ -32,6 +32,7 @@ import copy
 from scipy.spatial.transform import Rotation
 from rospkg import RosPack
 from traj_complete_ros.utils import BsplineGen
+from traj_complete_ros.plotting import rotation_bw2_vectors, plot3D, plot_quaternions, plot_quivers, generate_orientations, plot_curve_o3d
 from scipy.optimize import curve_fit
 
 
@@ -153,36 +154,13 @@ class myBagTransformer(object):
         return Rt_mat
 
 
-def plot3D(ax, data, marker=".", color="blue", autoscale=True):
-    if data.shape[1] < data.shape[0]:
-        data = data.T
-    if data.shape[0] == 4:
-        xs, ys, zs, _ = data
-    elif data.shape[0] == 3:
-        xs, ys, zs = data
-    else:
-        raise Exception("Wrong data shape?")
-
-    ax.plot(xs, ys, zs, marker=marker, color=color)
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    if autoscale:
-        ax.margins(0, 0, 0)
-        dsize = np.max(data.max(axis=1) - data.min(axis=1)) * 0.8
-        dcenter = data.mean(axis=1)
-        ax.set_xlim(dcenter[0] - dsize, dcenter[0] + dsize)
-        ax.set_ylim(dcenter[1] - dsize, dcenter[1] + dsize)
-        ax.set_zlim(dcenter[2] - dsize, dcenter[2] + dsize)
-
-
 def normalize_data(data, add_angle=0):
     # data[..., :2] -= (np.min(data, axis=0)[0], data[0, 1])  # normalize on mim/min
     data[..., :2] -= data[0, :2]  # normalize: first point -> [0, 0]
     diff = data[-1, :2] - data[0, :2]
     diff /= np.linalg.norm(diff)
     a = np.arctan(diff[1] / diff[0]) + np.deg2rad(add_angle)
-    dcm = Rotation.from_euler("z", -a, degrees=False).as_dcm()
+    dcm = Rotation.from_euler("z", -a, degrees=False).as_matrix()
     dcm = np.pad(dcm, ((0, 1), (0, 1)), mode="constant", constant_values=0)
     dcm[-1, -1] = 1
     return np.dot(dcm, np.pad(data, ((0, 0), (0, 1)), mode="constant", constant_values=1).T).T[..., :3]
@@ -202,7 +180,7 @@ def project_point(point, RT_mat, K_mat):
     point_in_cam = np.dot(np.linalg.inv(RT_mat), point)
     point_camera = np.dot(K_mat, point_in_cam[:3])
     point_camera /= point_camera[2]
-    point_image = tuple(point_camera[:2].astype(np.int))
+    point_image = tuple(point_camera[:2].astype(int))
     return point_image, point_camera
 
 
@@ -212,24 +190,25 @@ def main():
     close_point_filtering = True
     resampling_enabled = True
     lifting_enabled = False
-    saving_enabled = False
+    saving_enabled = True
     bspline_n_points = 1024
     # library_name = "hand_trajectories.yaml"
     library_name = "default_configuration.yaml"
 
-    draw_steps = True
+    draw_steps = False
     show_image_projection = False
     save_image_projection = False
     bagNames = [
-        ("patterns/old/bag_2021-01-29-17-30-16.bag", "zigzag"),
+        # ("patterns/2021-02-22-11-38-41.bag", "test1")
+        # ("patterns/old/bag_2021-01-29-17-30-16.bag", "zigzag"),
         # ("patterns/old/bag_2021-01-29-17-30-48.bag", "s-wave"),
         # ("patterns/old/bag_2021-01-29-17-31-00.bag", "z-wave"),
-        ("patterns/old/bag_2021-01-29-17-31-17.bag", "hand_knot"),
+        # ("patterns/old/bag_2021-01-29-17-31-17.bag", "hand_knot"),
         # ("patterns/old/bag_2021-01-29-17-31-54.bag", "triangle")
 
         # ("patterns/bag_2021-02-23-15-00-17.bag", ""),
         # ("patterns/bag_2021-02-23-15-00-32.bag", "Z-wave"),
-        # ("patterns/bag_2021-02-23-15-00-49.bag", "big_knot"),
+        ("patterns/bag_2021-02-23-15-00-49.bag", "smooth_knot"),
         # ("patterns/bag_2021-02-23-15-01-31.bag", "knot_circle_1"),
         # ("patterns/bag_2021-02-23-15-02-23.bag", "knot_circle_2"),
         # ("patterns/bag_2021-02-23-15-03-00.bag", "knot_circle_3"),
@@ -248,8 +227,8 @@ def main():
     lift_threshold = 3e-4
     lift_preset_height = 0.5e-2
 
+    rp = RosPack()
     if saving_enabled:
-        rp = RosPack()
         library_path = os.path.join(rp.get_path("traj_complete_ros"), "config", library_name)
 
     for bagName, patternName in bagNames:
@@ -280,7 +259,7 @@ def main():
         for topic, msg, t in bag.read_messages('{}/camera_info_throttle'.format(image_topic)):
             K_matrix = np.array(msg.K).reshape((3, 3))
             break
-        print(K_matrix)
+        # print(K_matrix)
 
         image_topic = next((name for name, info in bag.get_type_and_topic_info(
         ).topics.items() if image_topic in name and info.msg_type == "sensor_msgs/CompressedImage"))
@@ -317,6 +296,8 @@ def main():
         tracker_data = []
         tracker_data_pixel = []
         orient = []
+        raw_points = []
+        raw_quats = []
         data_2d = []
         data_pixel = []
         for topic, msg, t in tracker_msgs:
@@ -338,6 +319,8 @@ def main():
             tracker_pose = msg.pose
             world_to_tracker2_translation, world_to_tracker2_quaternion = tracker_pose.position, tracker_pose.orientation
             trans, rot = np.array([getattr(world_to_tracker2_translation, v) for v in "xyz"]), np.array([getattr(world_to_tracker2_quaternion, v) for v in "xyzw"]) # TODO: why change to wxyz from xyzW?
+            raw_points.append(trans)
+            raw_quats.append(rot)
             RtWorldToTracker = mbt.make_Rt_matrix(trans, rot)
 
             tip_pos = np.dot(RtWorldToTracker, np.hstack((end_point, 1)).T)
@@ -420,17 +403,49 @@ def main():
             if ret:
                 data = np.dot(M, cv2.convertPointsToHomogeneous(curve_3d_smooth).squeeze().T).T
 
-        data_2 = np.pad(PCA(n_components=2).fit_transform(data), ((0, 0), (0, 1)), mode="constant", constant_values=0)
-        data = PCA(n_components=3).fit_transform(data)
+        data2_pca = PCA(n_components=2)
+        data_2 = data2_pca.fit_transform(data[:, :3])
+        data_2 = np.pad(data_2, ((0, 0), (0, 1)), mode="constant", constant_values=0)
+        data3_pca = PCA(n_components=3)
         # normalize data
-        data_2 = normalize_data(data_2, 15)
-        # data = normalize_data(data)
+        data_2 = normalize_data(data_2, 0)
         if draw_steps:
             smooth2d = copy.deepcopy(data_2)
 
+        # >>> PLOTING THE ORIENTATIONS <<<
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection="3d")
+
+        # raw_points = normalize_data(np.array(raw_points))
+        # raw_quats = np.array(raw_quats)
+        # raw_orients = np.array([Rotation.from_quat(r).as_euler("xyz", degrees=False) for r in raw_quats])
+        # raw_orients = np.array([Rotation.from_quat(r).as_rotvec() for r in raw_quats])
+        # raw_orients = np.array([Rotation.from_quat(r).apply([1, 0, 0]) for r in raw_quats])
+        # d2 = raw_points
+        # d2 = raw_points[:, :2]
+        # plot3D(ax, d2 - raw_orients, autoscale=True, color="red")
+        # ax.quiver3D(*np.hstack((d2, d2 - raw_orients)).T, length=0.1, normalize=True, arrow_length_ratio=0.03, pivot="tip", linewidths=0.4)
+        # plot3D(ax, d2, autoscale=True, color="green")
+
+        # ax.quiver3D(*np.hstack((data_2, data_2 - orient)).T, length=0.1, normalize=True, arrow_length_ratio=0.1, pivot="tip", linewidths=0.4)
+
+        # orient = np.sin(np.array([(i / d_len) for i in range(d_len)]) * np.pi * 4)
+
+        # ax.quiver3D(*np.hstack((data_2, data_2 - orient)).T, length=0.1, normalize=True, arrow_length_ratio=0.1, pivot="tip", linewidths=0.4)
+        # plot3D(ax, data_2, autoscale=True, color="green")
+        # ax.quiver3D(*np.hstack((data[:, :3], data[:, :3] - orient * 0.9)).T, length=0.1, normalize=True, arrow_length_ratio=0.03, pivot="tip", linewidths=0.4)
+        # plot3D(ax, data, autoscale=True, color="green")
+
+        # ax.set_xlim3d([-0.5, 0])
+        # ax.set_ylim3d([-1, -0.5])
+        # ax.set_zlim3d([-2, 0])
+        # plt.show(block=True)
+        # orients, rot_vecs = generate_orientations(data_2, center_point=data_2[0, :])
+        # quats = np.array([Rotation.from_rotvec(rv).as_quat() for rv in rot_vecs])
+        # plot_quivers(data_2, orients)
+
+
         if resampling_enabled:
-            # plot3D(ax, data_2, autoscale=True, color="green")
-            # ax.quiver3D(*np.hstack((data_2, data_2 - orient * 0.9)).T, arrow_length_ratio=0.03, pivot="tip", linewidths=0.4)
             padding_amount = 12
             up_samp_amount, down_samp_amount = 2, 4
             data_resamp = signal.resample_poly(np.pad(data_2, ((padding_amount, padding_amount), (0, 0)), mode="edge"), up_samp_amount, down_samp_amount, axis=0, window=("kaiser", 10))
@@ -440,11 +455,29 @@ def main():
             # plot3D(ax, data_resamp, autoscale=True, color="red")
             data_2 = data_resamp
 
-        wayPoints = data_2[..., :2]
-        bsgen = BsplineGen.fromWaypoints(wayPoints)
-        # fig2, ax2 = plt.subplots()
-        # ax2.plot(*bsgen.generate_bspline_sample(bspline_n_points).T)
-        # ax2.plot(*wayPoints.T, color="red")
+        # generate artificial orientations
+        orients, rotations = generate_orientations(data_2, angle=np.deg2rad(5))   # the pattern will have this orientation
+        quats = np.array([r.as_quat() for r in rotations])
+
+        # 2D PATTERN
+        # wayPoints = data_2[..., :2]
+        # bsgen = BsplineGen.fromWaypoints(wayPoints)
+
+        # (2 + 1 + 4)D PATTERN (pos + z + quaternion)
+        wayPoints = np.hstack((data_2[..., :2], np.zeros((data_2.shape[0], 1)), quats))
+        bsgen = BsplineGen.fromWaypoints7D(wayPoints.T)
+
+        # orients, rotations = generate_orientations(data_2, center_point=data_2[0, :] * 2)
+        # plot_quivers(data_2, orients)
+
+        # try to generate new data from the bspline
+        sampled_spline_points = bsgen.generate_bspline_sample(500)
+        points = sampled_spline_points[:, :3]
+        quats = sampled_spline_points[:, 3:]
+        # plot_quaternions(points, quats)
+        plot_curve_o3d(points, quats)
+        npz_file = os.path.join("quat_curves", f"{patternName}.npz")
+        np.savez(npz_file, points=data_2, orientations=quats)
 
         if draw_steps:
             # raw
@@ -483,27 +516,14 @@ def main():
             plt.show()
 
         if saving_enabled:
-            # resamp_wayPoints = signal.resample_poly(wayPoints, 2, 4, axis=0, window=("kaiser", 10))
-            # ax2.plot(*resamp_wayPoints.T, color='green')
             tmp_suff = "_" + suffix if suffix else ""
             bsgen.appendToLibrary(library_path, name=patternName + tmp_suff)
-            # BsplineGen.storePatternToLibrary(library_path, wayPoints, name=patternName)
 
         if lifting_enabled:
             data_lift = copy.deepcopy(data_2)
             is_up = (data[..., 2] - data_2[..., 2]) > lift_threshold
             data_lift[is_up, 2] += lift_preset_height
-            plot3D(ax, data_lift, autoscale=True, color="green")
-            # plot3D(fig.add_subplot(133, projection='3d'), data_lift, autoscale=True, color="green")
-
-        if False:  # show board plane (might be broken)
-            # px, py, pz = np.mgrid[[slice(a, b, 10j) for a, b in (zip(data.min(0)[:3], data.max(0)[:3]))]].reshape(3, -1)
-            # X, Y = np.mgrid[-5:5:10j, -5:5:10j]
-            pts = np.pad(np.mgrid[-1:1:100j, -1:1:100j].reshape(2, -1), ((0, 1), (0, 0)), mode="constant", constant_values=0)
-            pts = np.pad(pts, ((0, 1), (0, 0)), mode="constant", constant_values=1)
-            px, py, pz, _ = np.dot(RtBoard2Vive, pts)
-            ax.scatter(px, py, pz)
-            # surf = ax.plot_surface(X, Y, Z)
+            # plot3D(ax, data_lift, autoscale=True, color="green")
 
         plt.show()
 
