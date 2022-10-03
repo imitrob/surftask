@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<launch>
+
+
+<rosparam command="load" ns="camera" file="$(find traj_complete_ros)/config/camera_calibration.yaml"/>
+<node name='camera_info_publisher' pkg="eyeinhand_calibration_publisher" type="yaml_to_camera_info_publisher.py" args="camera camera_color_optical_frame"/>
+<!-- Eye-in-Hand calibration publishing -->
+<node name="eyeinhand_updater" pkg="eyeinhand_calibration_publisher" type="update_camera_frames_and_publish.py" args="camera_link camera_color_optical_frame camera 30.0"/>
+
+</launch>

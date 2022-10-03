@@ -1,9 +1,12 @@
 <launch>
-    <node pkg="tf" type="static_transform_publisher" name="camera_transform" args="-0.135 0 -0.0327 0 -1.5708 0 /r1_ee /camera_base_link 10"/>
-    <node pkg="tf" type="static_transform_publisher" name="camera_transform2" args="0.0106 0.0175 0.0125 0 0 0 /camera_base_link /camera_link 10"/>
+    <!-- <node pkg="tf" type="static_transform_publisher" name="camera_transform" args="-0.135 0 -0.0327 0 -1.5708 0 /r1_ee /camera_base_link 10"/>
+    <node pkg="tf" type="static_transform_publisher" name="camera_transform2" args="0.0106 0.0175 0.0125 0 0 0 /camera_base_link /camera_link 10"/> -->
 
     <include file="$(find realsense2_camera)/launch/rs_camera.launch" />
     <group ns="camera/realsense2_camera">
-        <rosparam file="$(find traj_complete_ros)/config/rs_camera.yaml" />
+        <rosparam file="$(find traj_complete_ros)/config/rs_camerad455.yaml" />
+        <rosparam param="json_file_path" subst_value="True">
+            $(find traj_complete_ros)/config/D455_config.json
+        </rosparam>
     </group>
 </launch>
